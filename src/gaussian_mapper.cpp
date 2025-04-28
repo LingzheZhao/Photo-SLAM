@@ -535,6 +535,7 @@ void GaussianMapper::run()
 
     // Save and clear
     renderAndRecordAllKeyframes("_shutdown");
+    renderAndRecordAllFrames("_test");
     savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") / "ply");
     writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
 
@@ -601,6 +602,7 @@ void GaussianMapper::trainColmap()
 
     // Save and clear
     renderAndRecordAllKeyframes("_shutdown");
+    renderAndRecordAllFrames("_test");
     savePly(result_dir_ / (std::to_string(getIteration()) + "_shutdown") / "ply");
     writeKeyframeUsedTimes(result_dir_ / "used_times", "final");
 
@@ -1602,6 +1604,154 @@ void GaussianMapper::renderAndRecordKeyframe(
     psnr_gs = loss_utils::psnr_gaussian_splatting(masked_image, gt_image).item().toFloat();
 
     recordKeyframeRendered(masked_image, gt_image, pkf->fid_, result_img_dir, result_gt_dir, result_loss_dir, name_suffix);    
+}
+
+void GaussianMapper::renderAndRecordAllFrames(
+    std::string name_suffix)
+{
+    std::filesystem::path result_dir = result_dir_ / (std::to_string(getIteration()) + name_suffix);
+    CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(result_dir)
+
+    std::filesystem::path image_dir = result_dir / "all_image";
+    if (record_rendered_image_)
+        CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(image_dir);
+
+    std::filesystem::path image_gt_dir = result_dir / "all_image_gt";
+    if (record_ground_truth_image_)
+        CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(image_gt_dir);
+
+    std::filesystem::path image_loss_dir = result_dir / "all_image_loss";
+    if (record_loss_image_) {
+        CHECK_DIRECTORY_AND_CREATE_IF_NOT_EXISTS(image_loss_dir);
+    }
+
+    std::filesystem::path render_time_path = result_dir / "all_render_time.txt";
+    std::ofstream out_time(render_time_path);
+    out_time << "##[Gaussian Mapper]Render time statistics: keyframe id, time(milliseconds)" << std::endl;
+
+    std::filesystem::path dssim_path = result_dir / "all_dssim.txt";
+    std::ofstream out_dssim(dssim_path);
+    out_dssim << "##[Gaussian Mapper]keyframe id, dssim" << std::endl;
+
+    std::filesystem::path psnr_path = result_dir / "all_psnr.txt";
+    std::ofstream out_psnr(psnr_path);
+    out_psnr << "##[Gaussian Mapper]keyframe id, psnr" << std::endl;
+
+    std::filesystem::path psnr_gs_path = result_dir / "all_psnr_gaussian_splatting.txt";
+    std::ofstream out_psnr_gs(psnr_gs_path);
+    out_psnr_gs << "##[Gaussian Mapper]keyframe id, psnr_gaussian_splatting" << std::endl;
+
+    std::size_t nkfs = scene_->keyframes().size();
+    auto kfit = scene_->keyframes().begin();
+
+    vector<ORB_SLAM3::KeyFrame*> vpKFs = pSLAM_->getAtlas()->GetAllKeyFrames();
+    sort(vpKFs.begin(), vpKFs.end(), ORB_SLAM3::KeyFrame::lId);
+
+    // Transform all keyframes so that the first keyframe is at the origin.
+    // After a loop closure the first keyframe might not be at the origin.
+    Sophus::SE3f Two = vpKFs[0]->GetPoseInverse();
+
+    // Frame pose is stored relative to its reference keyframe (which is optimized by BA and pose graph).
+    // We need to get first the keyframe pose and then concatenate the relative transformation.
+    // Frames not localized (tracking failure) are not saved.
+
+    // For each frame we have a reference keyframe (lRit), the timestamp (lT) and a flag
+    // which is true when tracking failed (lbL).
+    list<ORB_SLAM3::KeyFrame*>::iterator lRit = pSLAM_->getTracker()->mlpReferences.begin();
+    list<double>::iterator lT = pSLAM_->getTracker()->mlFrameTimes.begin();
+    list<bool>::iterator lbL = pSLAM_->getTracker()->mlbLost.begin();
+
+    size_t counter = 0;
+    float dssim, psnr, psnr_gs;
+    double render_time;
+    for(list<Sophus::SE3f>::iterator lit=pSLAM_->getTracker()->mlRelativeFramePoses.begin(),
+            lend=pSLAM_->getTracker()->mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lT++, lbL++)
+    {
+        if(*lbL)
+            continue;
+
+        ORB_SLAM3::KeyFrame* pKF = *lRit;
+
+        Sophus::SE3f Trw;
+
+        // If the reference keyframe was culled, traverse the spanning tree to get a suitable keyframe.
+        while(pKF->isBad())
+        {
+            Trw = Trw * pKF->mTcp;
+            pKF = pKF->GetParent();
+        }
+
+        Trw = Trw * pKF->GetPose() * Two;
+
+        Sophus::SE3f Tcw = (*lit) * Trw;
+        Sophus::SE3f Twc = Tcw.inverse();
+
+        // construct new frame
+        std::shared_ptr<GaussianKeyframe> new_kf = std::make_shared<GaussianKeyframe>(counter, getIteration());
+        new_kf->zfar_ = z_far_;
+        new_kf->znear_ = z_near_;
+        // Pose
+        new_kf->setPose(
+            Tcw.unit_quaternion().cast<double>(),
+            Tcw.translation().cast<double>());
+        // Reference key(?)frames
+        cv::Mat imgRGB_undistorted, imgAux_undistorted;
+        try
+        {
+            // Camera
+            Camera& camera = scene_->cameras_.at(pKF->mpCamera->GetId());
+            new_kf->setCameraParams(camera);
+
+            // Image (left if STEREO)
+            cv::Mat imgRGB = pKF->imgLeftRGB;
+            if (this->sensor_type_ == STEREO)
+                imgRGB_undistorted = imgRGB;
+            else
+                camera.undistortImage(imgRGB, imgRGB_undistorted);
+            // Auxiliary Image
+            cv::Mat imgAux = pKF->imgAuxiliary;
+            if (this->sensor_type_ == RGBD)
+                camera.undistortImage(imgAux, imgAux_undistorted);
+            else
+                imgAux_undistorted = imgAux;
+
+            new_kf->original_image_ =
+                tensor_utils::cvMat2TorchTensor_Float32(imgRGB_undistorted, device_type_);
+            new_kf->img_filename_ = pKF->mNameFile;
+            new_kf->gaus_pyramid_height_ = camera.gaus_pyramid_height_;
+            new_kf->gaus_pyramid_width_ = camera.gaus_pyramid_width_;
+            new_kf->gaus_pyramid_times_of_use_ = kf_gaus_pyramid_times_of_use_;
+        }
+        catch (std::out_of_range) {
+            throw std::runtime_error("[GaussianMapper::run]KeyFrame Camera not found!");
+        }
+        new_kf->computeTransformTensors();
+        scene_->addKeyframe(new_kf, &kfid_shuffled_);
+
+        increaseKeyframeTimesOfUse(new_kf, newKeyframeTimesOfUse());
+
+        // Features
+        std::vector<float> pixels;
+        std::vector<float> pointsLocal;
+        pKF->GetKeypointInfo(pixels, pointsLocal);
+        new_kf->kps_pixel_ = std::move(pixels);
+        new_kf->kps_point_local_ = std::move(pointsLocal);
+        new_kf->img_undist_ = imgRGB_undistorted;
+        new_kf->img_auxiliary_undist_ = imgAux_undistorted;
+        renderAndRecordKeyframe(new_kf, dssim, psnr, psnr_gs, render_time, image_dir, image_gt_dir, image_loss_dir);
+
+        out_time << counter << " " << std::fixed << std::setprecision(8) << render_time << std::endl;
+
+        out_dssim   << counter << " " << std::fixed << std::setprecision(10) << dssim   << std::endl;
+        out_psnr    << counter << " " << std::fixed << std::setprecision(10) << psnr    << std::endl;
+        out_psnr_gs << counter << " " << std::fixed << std::setprecision(10) << psnr_gs << std::endl;
+
+        // WTF the shared_ptr still has a reference count of 1 to 2?
+        // LOL I will use the server with 1.6TB of RAM for now
+        // std::cout << new_kf.use_count() << std::endl;
+
+        ++counter;
+    }
 }
 
 void GaussianMapper::renderAndRecordAllKeyframes(

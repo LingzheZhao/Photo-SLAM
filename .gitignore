@@ -35,12 +35,17 @@
 /build/
 /bin/
 /lib/
+/cmake-build-*/
 
 # VS Code
 /.vscode/
 
+# IDEA
+/.idea/
+
 # results
 /results/
+/outputs/
 
 # ImGui .ini
 *imgui.ini
