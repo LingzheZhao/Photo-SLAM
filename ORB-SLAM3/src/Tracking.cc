@@ -1903,7 +1903,10 @@ void Tracking::Track()
     {
         if(mLastFrame.mTimeStamp>mCurrentFrame.mTimeStamp)
         {
-            cerr << "ERROR: Frame with a timestamp older than previous frame detected!" << endl;
+            cerr << "ERROR: Frame with a timestamp older than previous frame detected!"
+                 << std::fixed << std::setprecision(15)
+                 << "\nFrame timestamp: " << mCurrentFrame.mTimeStamp
+                 << "\nLast frame timestamp: " << mLastFrame.mTimeStamp << endl;
             unique_lock<mutex> lock(mMutexImuQueue);
             mlQueueImuData.clear();
             CreateMapInAtlas();
