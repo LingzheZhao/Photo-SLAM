@@ -43,6 +43,9 @@
 # IDEA
 /.idea/
 
+# data
+/data/
+
 # results
 /results/
 /outputs/
