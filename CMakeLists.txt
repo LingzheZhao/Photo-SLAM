@@ -226,6 +226,13 @@ target_link_libraries(euroc_stereo
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
+# Scannet RGBD
+add_executable(scannet_rgbd examples/scannet_rgbd.cpp)
+target_link_libraries(scannet_rgbd
+        gaussian_viewer
+        gaussian_mapper
+        ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
 ##################################################################################
 ##  Build the mapping examples to ${PROJECT_SOURCE_DIR}/bin
 ##################################################################################
