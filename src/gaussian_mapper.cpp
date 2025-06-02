@@ -1488,6 +1488,19 @@ void GaussianMapper::increasePcdByKeyframeInactiveGeoDensify(
 //     this->interrupt_training_ = interrupt_training;
 // }
 
+void GaussianMapper::recordDepthRendered(
+    torch::Tensor &rendered,
+    torch::Tensor &ground_truth,
+    unsigned long kfid,
+    std::filesystem::path result_img_dir,
+    std::string name_suffix)
+{
+    if (record_rendered_image_) {
+        auto image_cv = tensor_utils::torchTensor2CvMat_Float32(rendered);
+        cv::imwrite(result_img_dir / (std::to_string(getIteration()) + "_" + std::to_string(kfid) + name_suffix + ".exr"), image_cv);
+    }
+}
+
 void GaussianMapper::recordKeyframeRendered(
         torch::Tensor &rendered,
         torch::Tensor &ground_truth,
@@ -1546,7 +1559,7 @@ cv::Mat GaussianMapper::renderFromPose(
         throw std::runtime_error("[GaussianMapper::renderFromPose]KeyFrame Camera not found!");
     }
 
-    std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> render_pkg;
+    std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor> render_pkg;
     {
         std::unique_lock<std::mutex> lock_render(mutex_render_);
         // Render
@@ -1592,7 +1605,9 @@ void GaussianMapper::renderAndRecordKeyframe(
         override_color_
     );
     auto rendered_image = std::get<0>(render_pkg);
+    auto depth_image = std::get<4>(render_pkg);
     torch::Tensor masked_image = rendered_image * undistort_mask_[pkf->camera_id_];
+    torch::Tensor depth_masked_image = depth_image * undistort_mask_[pkf->camera_id_];
     torch::cuda::synchronize();
     auto end_timing = std::chrono::steady_clock::now();
     auto render_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_timing - start_timing).count();
@@ -1603,7 +1618,8 @@ void GaussianMapper::renderAndRecordKeyframe(
     psnr = loss_utils::psnr(masked_image, gt_image).item().toFloat();
     psnr_gs = loss_utils::psnr_gaussian_splatting(masked_image, gt_image).item().toFloat();
 
-    recordKeyframeRendered(masked_image, gt_image, pkf->fid_, result_img_dir, result_gt_dir, result_loss_dir, name_suffix);    
+    recordKeyframeRendered(masked_image, gt_image, pkf->fid_, result_img_dir, result_gt_dir, result_loss_dir, name_suffix);
+    recordDepthRendered(depth_masked_image, gt_image, pkf->fid_, result_img_dir, name_suffix);
 }
 
 void GaussianMapper::renderAndRecordAllFrames(

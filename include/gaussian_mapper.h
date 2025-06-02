@@ -191,7 +191,12 @@ protected:
 
     // bool needInterruptTraining();
     // void setInterruptTraining(const bool interrupt_training);
-
+    void recordDepthRendered(
+        torch::Tensor &rendered,
+        torch::Tensor &ground_truth,
+        unsigned long kfid,
+        std::filesystem::path result_img_dir,
+        std::string name_suffix);
     void recordKeyframeRendered(
         torch::Tensor &rendered,
         torch::Tensor &ground_truth,
